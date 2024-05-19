@@ -12,13 +12,13 @@ use regex::Regex;
 
 use crate::models::{Note, NoteTag, Tag};
 use crate::schema::ZSFNOTE::dsl::*;
-use crate::schema::ZSFNOTE::ZTRASHED;
 
-mod schema;
 mod models;
+mod schema;
 
+// TODO: Utilize the following paths to include note media in the migration, when supported.
+// Source: https://github.com/mivok/bear_backup/blob/master/bear_backup.py
 // Paths for building out the notes with full files
-// # Paths to various files
 // approot = os.path.expanduser("~/Library/Group Containers/9K33E3U3T4.net.shinyfrog.bear")
 // dbpath = os.path.join(approot, "Application Data/database.sqlite")
 // assetpath = os.path.join(approot, "Application Data/Local Files")
@@ -28,21 +28,25 @@ mod models;
 pub async fn establish_connection() -> SqliteConnection {
     dotenv().ok();
 
-    let database_url = env::var("DATABASE_URL")
-        .expect("DATABASE_URL must be set");
+    let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     SqliteConnection::establish(&database_url)
-        .expect(&format!("Error connecting to {}", database_url))
+        .unwrap_or_else(|_| panic!("Error connecting to {}", database_url))
 }
 
 pub async fn fetch_active_notes(connection: &mut SqliteConnection) -> Vec<Note> {
     ZSFNOTE
         .filter(ZTRASHED.eq(0))
+        .filter(ZARCHIVED.eq(0))
         .select(Note::as_select())
+        .limit(10)
         .load(connection)
         .expect("Error loading notes")
 }
 
-pub async fn fetch_tags_for_notes(connection: &mut SqliteConnection, notes: &Vec<Note>) -> Vec<(Tag, Option<i32>)> {
+pub async fn fetch_tags_for_notes(
+    connection: &mut SqliteConnection,
+    notes: &Vec<Note>,
+) -> Vec<(Tag, Option<i32>)> {
     NoteTag::belonging_to(notes)
         .inner_join(schema::ZSFNOTETAG::table)
         .select((Tag::as_select(), schema::Z_5TAGS::Z_5NOTES.nullable()))
@@ -50,28 +54,82 @@ pub async fn fetch_tags_for_notes(connection: &mut SqliteConnection, notes: &Vec
         .expect("Failed to load tags")
 }
 
-pub async fn substitute_tags_for_backlinks<'a>(note: &'a mut Note, tags: Vec<&Tag>) -> &'a mut Note {
-    let re = Regex::new(r"#([a-zA-Z0-9]+(\s[a-zA-Z0-9]+)?)#?").unwrap();
-
-    for tag in tags {
-        if let Some(is_root) = tag.is_root {
-            if is_root != 1 {
-                println!("Skipping non-root tag: {}", tag.title.clone().unwrap_or_default());
-                continue;
-            }
-
-            if let Some(ref mut text) = note.ZTEXT {
-                let new_text = re.replace_all(
-                    text,
-                    &format!(r"[[{}]]", tag.title.clone().unwrap_or_default().to_title_case())
-                );
-                dbg!(&new_text);
-                *text = new_text.to_string();
-            }
-        } else {
-            println!("Tag is missing 'is_root': {:?}", tag);
-        }
+pub async fn collapse_root_tags_with_nested_tags(tags: Vec<&Tag>) -> Vec<&Tag> {
+    if tags.len() <= 1 {
+        return tags;
     }
+    // Sort tags by the is_root property in descending order
+    let mut sorted_tags = tags.clone();
+    sorted_tags.sort_by(|tag_a, tag_b| tag_b.is_root.unwrap_or(0).cmp(&tag_a.is_root.unwrap_or(0)));
+    let mut i: usize = 0;
+
+    while i < sorted_tags.len() {
+        if let Some(is_root) = sorted_tags[i].is_root {
+            if is_root == 1 {
+                let title = sorted_tags[i].title.as_ref().unwrap();
+                let mut found: bool = false;
+
+                for other_tag in sorted_tags.iter().skip(i + 1) {
+                    if let Some(ref other_title) = other_tag.title {
+                        if other_title.starts_with(title) {
+                            found = true;
+
+                            break;
+                        }
+                    }
+                }
+
+                if found {
+                    sorted_tags.remove(i);
+                    continue;
+                }
+            }
+        }
+
+        i += 1;
+    }
+
+    sorted_tags
+}
+
+async fn replace_tags_in_text(text: Option<&mut String>, tags: Vec<&Tag>) -> Option<String> {
+    if let Some(text) = text {
+        let mut new_text = text.clone();
+
+        for tag in tags {
+            let regex =
+                Regex::new(r"#([a-zA-Z0-9]+(\s[a-zA-Z0-9]+)?(/[a-zA-Z0-9]+(\s[a-zA-Z0-9]+)?)*)#?")
+                    .unwrap();
+
+            let tag_title = tag.title.clone().unwrap_or_default();
+            let backlinks: Vec<String> = tag_title
+                .split('/')
+                .map(|backlink| backlink.to_title_case())
+                .collect();
+
+            let formatted_backlinks = backlinks
+                .iter()
+                .map(|s| format!("[[{}]]", s))
+                .collect::<Vec<_>>()
+                .join(" ");
+
+            let replaced_text = &mut regex.replace_all(text, &formatted_backlinks).to_string();
+            new_text = replaced_text.to_string();
+        }
+
+        return Some(new_text);
+    }
+
+    None
+}
+
+pub async fn substitute_tags_for_backlinks<'a>(
+    note: &'a mut Note,
+    tags: Vec<&Tag>,
+) -> &'a mut Note {
+    note.title = replace_tags_in_text(note.title.as_mut(), tags.clone()).await;
+    note.subtitle = replace_tags_in_text(note.subtitle.as_mut(), tags.clone()).await;
+    note.text = replace_tags_in_text(note.text.as_mut(), tags.clone()).await;
 
     note
 }
@@ -83,7 +141,7 @@ async fn main() {
     let mut notes: Vec<Note> = fetch_active_notes(connection).await;
 
     let tags: Vec<(Tag, Option<i32>)> = fetch_tags_for_notes(connection, &notes).await;
-    // Group tags by the i32 in the tuple
+
     let mut grouped_tags_by_note = BTreeMap::<i32, Vec<&Tag>>::new();
 
     for tag_note_tuple in tags.iter() {
@@ -93,35 +151,24 @@ async fn main() {
             .push(&tag_note_tuple.0);
     }
 
-    // Drop this
     // Iterate through the notes, converting tags into backlinks in the note text
     for note in &mut notes {
         let tags = {
-            let z_pk = note.Z_PK.clone();
+            let z_pk = note.id;
             let empty_vec: Vec<&Tag> = Vec::new();
-            grouped_tags_by_note.get(&z_pk).unwrap_or(&empty_vec).to_vec()
+
+            collapse_root_tags_with_nested_tags(
+                grouped_tags_by_note
+                    .get(&z_pk)
+                    .unwrap_or(&empty_vec)
+                    .to_vec(),
+            )
+            .await
         };
 
         substitute_tags_for_backlinks(note, tags).await;
+        dbg!(note);
     }
-
-    // println!("{:?}", notes.first().unwrap());
-
-    // let tag: &(Tag, Option<i32>) = tags.first().unwrap();
-    // dbg!(tag);
-
-    // let printable_note = note.unwrap();
-    //
-    // let note_id = printable_note.Z_PK;
-    // let note_title = printable_note.ZTITLE.unwrap();
-    // let note_text = printable_note.ZTEXT.unwrap();
-    //
-    // println!("{}: {}", note_id, note_title);
-    // println!("-----------\n");
-    // println!("Displaying {} tags", tags.len());
-    // for tag in tags {
-    //     println!("{}", tag.title.unwrap());
-    // }
 
     // println!("Preparing note for Reflect API...");
     // let note_json = json!({
