@@ -5,8 +5,10 @@ use std::collections::BTreeMap;
 
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
+use futures::future::join_all;
 use inflector::Inflector;
 use regex::Regex;
+use serde_json::json;
 
 use self::models::{Note, NoteTag, Tag};
 use self::schema::ZSFNOTE::dsl::*;
@@ -34,12 +36,11 @@ pub async fn fetch_active_notes(connection: &mut SqliteConnection) -> Vec<Note> 
         .filter(ZTRASHED.eq(0))
         .filter(ZARCHIVED.eq(0))
         .select(Note::as_select())
-        .limit(10)
         .load(connection)
         .expect("Error loading notes")
 }
 
-pub async fn fetch_tags_for_notes(
+async fn fetch_tags_for_notes(
     connection: &mut SqliteConnection,
     notes: &Vec<Note>,
 ) -> Vec<(Tag, Option<i32>)> {
@@ -50,7 +51,7 @@ pub async fn fetch_tags_for_notes(
         .expect("Failed to load tags")
 }
 
-pub async fn collapse_root_tags_with_nested_tags(tags: Vec<&Tag>) -> Vec<&Tag> {
+async fn collapse_root_tags_with_nested_tags(tags: Vec<&Tag>) -> Vec<&Tag> {
     if tags.len() <= 1 {
         return tags;
     }
@@ -109,7 +110,7 @@ async fn replace_tags_in_text(text: Option<&mut String>, tags: Vec<&Tag>) -> Opt
                 .collect::<Vec<_>>()
                 .join(" ");
 
-            let replaced_text = &mut regex.replace_all(text, &formatted_backlinks).to_string();
+            let replaced_text = &mut regex.replace_all(text, &formatted_backlinks);
             new_text = replaced_text.to_string();
         }
 
@@ -119,7 +120,7 @@ async fn replace_tags_in_text(text: Option<&mut String>, tags: Vec<&Tag>) -> Opt
     None
 }
 
-pub async fn substitute_tags_for_backlinks<'a>(
+async fn substitute_tags_for_backlinks<'a>(
     note: &'a mut Note,
     tags: Vec<&Tag>,
 ) -> &'a mut Note {
@@ -148,30 +149,38 @@ async fn main() {
     }
 
     // Iterate through the notes, converting tags into backlinks in the note text
-    for note in &mut notes {
-        let tags = {
-            let z_pk = note.id;
-            let empty_vec: Vec<&Tag> = Vec::new();
+    let note_futures = notes.into_iter().map(|mut note| {
+        let grouped_tags_by_note = &grouped_tags_by_note;
 
-            collapse_root_tags_with_nested_tags(
-                grouped_tags_by_note
-                    .get(&z_pk)
-                    .unwrap_or(&empty_vec)
-                    .to_vec(),
-            )
-            .await
-        };
+        async move {
+            let tags = {
+                let z_pk = note.id;
+                let empty_vec: Vec<&Tag> = Vec::new();
 
-        substitute_tags_for_backlinks(note, tags).await;
-        dbg!(note);
+                collapse_root_tags_with_nested_tags(
+                    grouped_tags_by_note
+                        .get(&z_pk)
+                        .unwrap_or(&empty_vec)
+                        .to_vec(),
+                ).await
+            };
+
+            substitute_tags_for_backlinks(&mut note, tags).await;
+
+            note.clone()
+        }
+    });
+
+    notes = join_all(note_futures).await;
+
+    println!("Preparing note for Reflect API...");
+
+    for note in notes {
+        let note_json = json!({
+            "subject": note.title,
+            "content_markdown": note.text,
+        });
+
+        println!("{}", note_json);
     }
-
-    // println!("Preparing note for Reflect API...");
-    // let note_json = json!({
-    //     "subject": note_title,
-    //     "content_markdown": note_text,
-    //     "tags": tags.into_iter().map(|tag| tag.title.clone().unwrap()).collect::<Vec<String>>(),
-    // });
-    //
-    // println!("{}", note_json.to_string());
 }
