@@ -1,6 +1,9 @@
 // @generated automatically by Diesel CLI.
+#![allow(clippy::all)]
+#![allow(non_snake_case)]
 
 use diesel::joinable;
+
 diesel::table! {
     ZSFNOTE (Z_PK) {
         Z_PK -> Integer,
@@ -44,78 +47,6 @@ diesel::table! {
 }
 
 diesel::table! {
-    ZSFNOTEBACKLINK (Z_PK) {
-        Z_PK -> Nullable<Integer>,
-        Z_ENT -> Nullable<Integer>,
-        Z_OPT -> Nullable<Integer>,
-        ZLOCATION -> Nullable<Integer>,
-        ZVERSION -> Nullable<Integer>,
-        ZLINKEDBY -> Nullable<Integer>,
-        ZLINKINGTO -> Nullable<Integer>,
-        ZMODIFICATIONDATE -> Nullable<Timestamp>,
-        ZTITLE -> Nullable<Text>,
-        ZUNIQUEIDENTIFIER -> Nullable<Text>,
-        ZSERVERDATA -> Nullable<Binary>,
-    }
-}
-
-diesel::table! {
-    ZSFNOTEFILE (Z_PK) {
-        Z_PK -> Nullable<Integer>,
-        Z_ENT -> Nullable<Integer>,
-        Z_OPT -> Nullable<Integer>,
-        ZDOWNLOADED -> Nullable<Integer>,
-        ZFILESIZE -> Nullable<Integer>,
-        ZINDEX -> Nullable<Integer>,
-        ZPERMANENTLYDELETED -> Nullable<Integer>,
-        ZSKIPSYNC -> Nullable<Integer>,
-        ZUNUSED -> Nullable<Integer>,
-        ZUPLOADED -> Nullable<Integer>,
-        ZVERSION -> Nullable<Integer>,
-        ZNOTE -> Nullable<Integer>,
-        ZSERVERDATA -> Nullable<Integer>,
-        ZANIMATED -> Nullable<Integer>,
-        ZHEIGHT -> Nullable<Integer>,
-        ZWIDTH -> Nullable<Integer>,
-        ZDURATION -> Nullable<Integer>,
-        ZHEIGHT1 -> Nullable<Integer>,
-        ZWIDTH1 -> Nullable<Integer>,
-        ZCREATIONDATE -> Nullable<Timestamp>,
-        ZINSERTIONDATE -> Nullable<Timestamp>,
-        ZMODIFICATIONDATE -> Nullable<Timestamp>,
-        ZSEARCHTEXTDATE -> Nullable<Timestamp>,
-        ZUNUSEDDATE -> Nullable<Timestamp>,
-        ZUPLOADEDDATE -> Nullable<Timestamp>,
-        ZFILENAME -> Nullable<Text>,
-        ZLASTEDITINGDEVICE -> Nullable<Text>,
-        ZNORMALIZEDFILEEXTENSION -> Nullable<Text>,
-        ZSEARCHTEXT -> Nullable<Text>,
-        ZUNIQUEIDENTIFIER -> Nullable<Text>,
-    }
-}
-
-diesel::table! {
-    ZSFNOTEFILESERVERDATA (Z_PK) {
-        Z_PK -> Nullable<Integer>,
-        Z_ENT -> Nullable<Integer>,
-        Z_OPT -> Nullable<Integer>,
-        ZFILE -> Nullable<Integer>,
-        Z7_FILE -> Nullable<Integer>,
-        ZSYSTEMFIELDS -> Nullable<Binary>,
-    }
-}
-
-diesel::table! {
-    ZSFNOTESERVERDATA (Z_PK) {
-        Z_PK -> Nullable<Integer>,
-        Z_ENT -> Nullable<Integer>,
-        Z_OPT -> Nullable<Integer>,
-        ZNOTE -> Nullable<Integer>,
-        ZSYSTEMFIELDS -> Nullable<Binary>,
-    }
-}
-
-diesel::table! {
     ZSFNOTETAG (Z_PK) {
         Z_PK -> Nullable<Integer>,
         Z_ENT -> Nullable<Integer>,
@@ -147,12 +78,4 @@ diesel::table! {
 joinable!(Z_5TAGS -> ZSFNOTE (Z_5NOTES));
 joinable!(Z_5TAGS -> ZSFNOTETAG (Z_13TAGS));
 
-diesel::allow_tables_to_appear_in_same_query!(
-    ZSFNOTE,
-    ZSFNOTEBACKLINK,
-    ZSFNOTEFILE,
-    ZSFNOTEFILESERVERDATA,
-    ZSFNOTESERVERDATA,
-    ZSFNOTETAG,
-    Z_5TAGS,
-);
+diesel::allow_tables_to_appear_in_same_query!(ZSFNOTE, ZSFNOTETAG, Z_5TAGS,);
