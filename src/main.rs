@@ -1,17 +1,15 @@
+extern crate clap;
 extern crate diesel;
-extern crate dotenv;
 
 use std::collections::BTreeMap;
-use std::env;
 
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
-use dotenv::dotenv;
 use inflector::Inflector;
 use regex::Regex;
 
-use crate::models::{Note, NoteTag, Tag};
-use crate::schema::ZSFNOTE::dsl::*;
+use self::models::{Note, NoteTag, Tag};
+use self::schema::ZSFNOTE::dsl::*;
 
 mod models;
 mod schema;
@@ -25,10 +23,8 @@ mod schema;
 // imagepath = os.path.join(assetpath, "Note Images")
 // filepath = os.path.join(assetpath, "Note Files")
 
-pub async fn establish_connection() -> SqliteConnection {
-    dotenv().ok();
-
-    let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+async fn establish_connection() -> SqliteConnection {
+    let database_url = "sqlite://bear.sqlite".to_string(); // TODO: Update this to be dynamic/default to Bear location
     SqliteConnection::establish(&database_url)
         .unwrap_or_else(|_| panic!("Error connecting to {}", database_url))
 }
