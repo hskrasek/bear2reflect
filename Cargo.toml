@@ -6,22 +6,15 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-Inflector = "0.11.4"
+chrono = { version =  "0.4.38", features = ["serde"]}
+clap = { version = "4.5.4", features = ["derive"] }
 diesel = { version = "2.0.0", features = ["sqlite", "64-column-tables", "chrono"] }
-
-# JSON serialization/deserialization
+env_logger = "0.11.3"
+futures = "0.3.30"
+Inflector = "0.11.4"
+log = "0.4"
+regex = "1.10.4"
+reqwest = { version = "0.12.4", features = ["json"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-
-# Async HTTP requests
-reqwest = { version = "0.12.4", features = ["json"] }
-
-# Tokio for async runtime
 tokio = { version = "1", features = ["full"] }
-
-chrono = { version =  "0.4.38", features = ["serde"]}
-
-log = "0.4"
-env_logger = "0.11.3"
-regex = "1.10.4"
-clap = { version = "4.5.4", features = ["derive"] }
