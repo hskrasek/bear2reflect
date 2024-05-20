@@ -4,17 +4,21 @@ extern crate diesel;
 use std::collections::BTreeMap;
 
 use diesel::prelude::*;
+use diesel::r2d2::{self, ConnectionManager};
 use diesel::sqlite::SqliteConnection;
 use futures::future::join_all;
 use inflector::Inflector;
 use regex::Regex;
 use serde_json::json;
+use tokio::task;
 
 use self::models::{Note, NoteTag, Tag};
 use self::schema::ZSFNOTE::dsl::*;
 
 mod models;
 mod schema;
+
+type DbPool = r2d2::Pool<ConnectionManager<SqliteConnection>>;
 
 // TODO: Utilize the following paths to include note media in the migration, when supported.
 // Source: https://github.com/mivok/bear_backup/blob/master/bear_backup.py
@@ -25,30 +29,48 @@ mod schema;
 // imagepath = os.path.join(assetpath, "Note Images")
 // filepath = os.path.join(assetpath, "Note Files")
 
-async fn establish_connection() -> SqliteConnection {
+async fn establish_connection() -> DbPool {
     let database_url = "sqlite://bear.sqlite".to_string(); // TODO: Update this to be dynamic/default to Bear location
-    SqliteConnection::establish(&database_url)
-        .unwrap_or_else(|_| panic!("Error connecting to {}", database_url))
+    let manager = ConnectionManager::<SqliteConnection>::new(database_url);
+
+    r2d2::Pool::builder()
+        .build(manager)
+        .expect("Failed to establish database pool with internal Bear database.")
 }
 
-pub async fn fetch_active_notes(connection: &mut SqliteConnection) -> Vec<Note> {
-    ZSFNOTE
-        .filter(ZTRASHED.eq(0))
-        .filter(ZARCHIVED.eq(0))
-        .select(Note::as_select())
-        .load(connection)
-        .expect("Error loading notes")
+async fn fetch_active_notes(pool: DbPool) -> Vec<Note> {
+    let mut connection = pool
+        .get()
+        .expect("Failed to fetch a connection from the database pool.");
+
+    task::spawn_blocking(move || {
+        ZSFNOTE
+            .filter(ZTRASHED.eq(0))
+            .filter(ZARCHIVED.eq(0))
+            .select(Note::as_select())
+            .load(&mut connection)
+            .expect("Error loading notes from the Bear database.")
+    })
+    .await
+    .expect("Task for fetching notes failed.")
 }
 
 async fn fetch_tags_for_notes(
-    connection: &mut SqliteConnection,
-    notes: &Vec<Note>,
+    pool: DbPool,
+    notes: Vec<Note>,
 ) -> Vec<(Tag, Option<i32>)> {
-    NoteTag::belonging_to(notes)
-        .inner_join(schema::ZSFNOTETAG::table)
-        .select((Tag::as_select(), schema::Z_5TAGS::Z_5NOTES.nullable()))
-        .load::<(Tag, Option<i32>)>(connection)
-        .expect("Failed to load tags")
+    let mut connection = pool
+        .get()
+        .expect("Failed to fetch a connection from the database pool.");
+
+    task::spawn_blocking(move || {
+        NoteTag::belonging_to(&notes)
+            .inner_join(schema::ZSFNOTETAG::table)
+            .select((Tag::as_select(), schema::Z_5TAGS::Z_5NOTES.nullable()))
+            .load::<(Tag, Option<i32>)>(&mut connection)
+            .expect("Failed to load tags")
+    })
+    .await.expect("")
 }
 
 async fn collapse_root_tags_with_nested_tags(tags: Vec<&Tag>) -> Vec<&Tag> {
@@ -120,10 +142,7 @@ async fn replace_tags_in_text(text: Option<&mut String>, tags: Vec<&Tag>) -> Opt
     None
 }
 
-async fn substitute_tags_for_backlinks<'a>(
-    note: &'a mut Note,
-    tags: Vec<&Tag>,
-) -> &'a mut Note {
+async fn substitute_tags_for_backlinks<'a>(note: &'a mut Note, tags: Vec<&Tag>) -> &'a mut Note {
     note.title = replace_tags_in_text(note.title.as_mut(), tags.clone()).await;
     note.subtitle = replace_tags_in_text(note.subtitle.as_mut(), tags.clone()).await;
     note.text = replace_tags_in_text(note.text.as_mut(), tags.clone()).await;
@@ -133,13 +152,13 @@ async fn substitute_tags_for_backlinks<'a>(
 
 #[tokio::main]
 async fn main() {
-    let connection: &mut SqliteConnection = &mut establish_connection().await;
+    let pool: DbPool = establish_connection().await;
 
-    let mut notes: Vec<Note> = fetch_active_notes(connection).await;
+    let notes: Vec<Note> = fetch_active_notes(pool.clone()).await;
 
-    let tags: Vec<(Tag, Option<i32>)> = fetch_tags_for_notes(connection, &notes).await;
+    let tags: Vec<(Tag, Option<i32>)> = fetch_tags_for_notes(pool.clone(), notes.clone()).await;
 
-    let mut grouped_tags_by_note = BTreeMap::<i32, Vec<&Tag>>::new();
+    let mut grouped_tags_by_note: BTreeMap<i32, Vec<&Tag>> = BTreeMap::<i32, Vec<&Tag>>::new();
 
     for tag_note_tuple in tags.iter() {
         grouped_tags_by_note
@@ -162,16 +181,17 @@ async fn main() {
                         .get(&z_pk)
                         .unwrap_or(&empty_vec)
                         .to_vec(),
-                ).await
+                )
+                .await
             };
 
             substitute_tags_for_backlinks(&mut note, tags).await;
 
-            note.clone()
+            note
         }
     });
 
-    notes = join_all(note_futures).await;
+    let notes = join_all(note_futures).await;
 
     println!("Preparing note for Reflect API...");
 

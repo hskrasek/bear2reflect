@@ -8,11 +8,12 @@ edition = "2021"
 [dependencies]
 chrono = { version =  "0.4.38", features = ["serde"]}
 clap = { version = "4.5.4", features = ["derive"] }
-diesel = { version = "2.0.0", features = ["sqlite", "64-column-tables", "chrono"] }
+diesel = { version = "2.0.0", features = ["sqlite", "64-column-tables", "chrono", "r2d2"] }
 env_logger = "0.11.3"
 futures = "0.3.30"
 Inflector = "0.11.4"
 log = "0.4"
+r2d2 = "0.8.10"
 regex = "1.10.4"
 reqwest = { version = "0.12.4", features = ["json"] }
 serde = { version = "1.0", features = ["derive"] }
