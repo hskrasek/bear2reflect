@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 chrono = { version =  "0.4.38", features = ["serde"]}
 clap = { version = "4.5.4", features = ["derive"] }
+clap-verbosity-flag = "2.2.0"
 diesel = { version = "2.0.0", features = ["sqlite", "64-column-tables", "chrono", "r2d2"] }
 env_logger = "0.11.3"
 futures = "0.3.30"
