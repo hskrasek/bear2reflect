@@ -2,6 +2,7 @@ extern crate clap;
 extern crate diesel;
 
 use std::collections::BTreeMap;
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::string::ToString;
 
@@ -12,6 +13,7 @@ use diesel::r2d2::{self, ConnectionManager};
 use diesel::sqlite::SqliteConnection;
 use futures::future::join_all;
 use inflector::Inflector;
+use log::{debug, info};
 use regex::Regex;
 use serde_json::json;
 use tokio::task;
@@ -51,6 +53,11 @@ async fn establish_connection(database_path: PathBuf) -> DbPool {
     let manager: ConnectionManager<SqliteConnection> =
         ConnectionManager::<SqliteConnection>::new(database_url_ref);
 
+    info!(
+        "Creating a pool of database collections connected to {}",
+        database_url
+    );
+
     r2d2::Pool::builder()
         .build(manager)
         .unwrap_or_else(|_| panic!("Failed to establish database pool on {}.", database_url))
@@ -62,6 +69,8 @@ async fn fetch_active_notes(pool: DbPool) -> Vec<Note> {
         .expect("Failed to fetch a connection from the database pool.");
 
     task::spawn_blocking(move || {
+        info!("Spawning task to fetch notes from the Bear database.");
+
         ZSFNOTE
             .filter(ZTRASHED.eq(0))
             .filter(ZARCHIVED.eq(0))
@@ -78,7 +87,14 @@ async fn fetch_tags_for_notes(pool: DbPool, notes: Vec<Note>) -> Vec<(Tag, Optio
         .get()
         .expect("Failed to fetch a connection from the database pool.");
 
+    debug!(
+        "Attempting to load tags for the following notes: {:#?}",
+        &notes.clone().into_iter().map(|x| { x.id })
+    );
+
     task::spawn_blocking(move || {
+        info!("Spawning task to fetch associated tags for notes.");
+
         NoteTag::belonging_to(&notes)
             .inner_join(schema::ZSFNOTETAG::table)
             .select((Tag::as_select(), schema::Z_5TAGS::Z_5NOTES.nullable()))
@@ -90,7 +106,14 @@ async fn fetch_tags_for_notes(pool: DbPool, notes: Vec<Note>) -> Vec<(Tag, Optio
 }
 
 async fn collapse_root_tags_with_nested_tags(tags: Vec<&Tag>) -> Vec<&Tag> {
+    info!("Collapsing tags vector to remove root tags, in instances where the root tag and tag nested under the root are present.");
+
     if tags.len() <= 1 {
+        debug!(
+            "Skipping tag collapsing due to one or less tags. Total: {}",
+            tags.len()
+        );
+
         return tags;
     }
 
@@ -114,13 +137,18 @@ async fn collapse_root_tags_with_nested_tags(tags: Vec<&Tag>) -> Vec<&Tag> {
                         if other_title.starts_with(title) {
                             found = true;
 
+                            debug!("Found nested tag {} that starts with root tag {}", other_title, title);
+
                             break;
                         }
                     }
                 }
 
                 if found {
+                    debug!("Removing root tag {}", title);
+
                     sorted_tags.remove(i);
+
                     continue;
                 }
             }
@@ -164,22 +192,44 @@ async fn replace_tags_in_text(text: Option<&mut String>, tags: Vec<&Tag>) -> Opt
 }
 
 async fn substitute_tags_for_backlinks<'a>(note: &'a mut Note, tags: Vec<&Tag>) -> &'a mut Note {
+    info!("Substituting tags for Reflect formatted backlinks in note; Id: {}, Title: {}", note.id, note.title.clone().unwrap_or_default());
+
+    debug!("Note title before replacement: {:?}", note.title);
     note.title = replace_tags_in_text(note.title.as_mut(), tags.clone()).await;
+    debug!("Note title after replacement: {:?}", note.title);
+
+    debug!("Note subtitle before replacement: {:?}", note.subtitle);
     note.subtitle = replace_tags_in_text(note.subtitle.as_mut(), tags.clone()).await;
+    debug!("Note subtitle after replacement: {:?}", note.subtitle);
+
+    debug!("Note text before replacement: {:?}", note.text);
     note.text = replace_tags_in_text(note.text.as_mut(), tags.clone()).await;
+    debug!("Note text after replacement: {:?}", note.text);
 
     note
 }
 
 #[tokio::main]
 async fn main() {
+    let mut stdout = io::stdout().lock();
+
     let app: Bear2Reflect = Bear2Reflect::parse();
+
+    env_logger::Builder::new()
+        .filter_level(app.verbose.log_level_filter())
+        .init();
 
     let database_path = app.bear_db.unwrap_or(PathBuf::from(BEAR_DB_PATH));
 
     let pool: DbPool = establish_connection(database_path).await;
 
+    writeln!(stdout, "Loading notes from Bear internal database...")
+        .expect("TODO: Update main func to use the ? operator");
+
     let notes: Vec<Note> = fetch_active_notes(pool.clone()).await;
+
+    writeln!(stdout, "Found {} notes to migrate to Reflect", notes.len())
+        .expect("TODO: Update main func to use the ? operator");
 
     let tags: Vec<(Tag, Option<i32>)> = fetch_tags_for_notes(pool.clone(), notes.clone()).await;
 
@@ -216,6 +266,8 @@ async fn main() {
         }
     });
 
+    writeln!(stdout, "Preparing notes for Reflect...")
+        .expect("TODO: Update main func to use the ? operator");
 
     let notes = join_all(note_futures).await;
 
@@ -225,6 +277,7 @@ async fn main() {
             "content_markdown": note.text,
         });
 
-        println!("{}", note_json);
+        writeln!(stdout, "{}", note_json)
+            .expect("TODO: Update main func to use the ? operator");
     }
 }
