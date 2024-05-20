@@ -2,7 +2,11 @@ extern crate clap;
 extern crate diesel;
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::string::ToString;
 
+use clap::Parser;
+use clap_verbosity_flag::Verbosity;
 use diesel::prelude::*;
 use diesel::r2d2::{self, ConnectionManager};
 use diesel::sqlite::SqliteConnection;
@@ -18,7 +22,19 @@ use self::schema::ZSFNOTE::dsl::*;
 mod models;
 mod schema;
 
+const BEAR_DB_PATH: &str =
+    "~/Library/Group Containers/9K33E3U3T4.net.shinyfrog.bear/Application Data/database.sqlite";
+
 type DbPool = r2d2::Pool<ConnectionManager<SqliteConnection>>;
+
+#[derive(Parser)]
+#[command(version, about, long_about = None)]
+struct Bear2Reflect {
+    bear_db: Option<PathBuf>,
+
+    #[command(flatten)]
+    verbose: Verbosity,
+}
 
 // TODO: Utilize the following paths to include note media in the migration, when supported.
 // Source: https://github.com/mivok/bear_backup/blob/master/bear_backup.py
@@ -29,13 +45,15 @@ type DbPool = r2d2::Pool<ConnectionManager<SqliteConnection>>;
 // imagepath = os.path.join(assetpath, "Note Images")
 // filepath = os.path.join(assetpath, "Note Files")
 
-async fn establish_connection() -> DbPool {
-    let database_url = "sqlite://bear.sqlite".to_string(); // TODO: Update this to be dynamic/default to Bear location
-    let manager = ConnectionManager::<SqliteConnection>::new(database_url);
+async fn establish_connection(database_path: PathBuf) -> DbPool {
+    let database_url: String = database_path.into_os_string().into_string().unwrap();
+    let database_url_ref: &str = &database_url;
+    let manager: ConnectionManager<SqliteConnection> =
+        ConnectionManager::<SqliteConnection>::new(database_url_ref);
 
     r2d2::Pool::builder()
         .build(manager)
-        .expect("Failed to establish database pool with internal Bear database.")
+        .unwrap_or_else(|_| panic!("Failed to establish database pool on {}.", database_url))
 }
 
 async fn fetch_active_notes(pool: DbPool) -> Vec<Note> {
@@ -55,10 +73,7 @@ async fn fetch_active_notes(pool: DbPool) -> Vec<Note> {
     .expect("Task for fetching notes failed.")
 }
 
-async fn fetch_tags_for_notes(
-    pool: DbPool,
-    notes: Vec<Note>,
-) -> Vec<(Tag, Option<i32>)> {
+async fn fetch_tags_for_notes(pool: DbPool, notes: Vec<Note>) -> Vec<(Tag, Option<i32>)> {
     let mut connection = pool
         .get()
         .expect("Failed to fetch a connection from the database pool.");
@@ -68,18 +83,24 @@ async fn fetch_tags_for_notes(
             .inner_join(schema::ZSFNOTETAG::table)
             .select((Tag::as_select(), schema::Z_5TAGS::Z_5NOTES.nullable()))
             .load::<(Tag, Option<i32>)>(&mut connection)
-            .expect("Failed to load tags")
+            .expect("Failed to load tags for the selected notes from the Bear database.")
     })
-    .await.expect("")
+    .await
+    .expect("")
 }
 
 async fn collapse_root_tags_with_nested_tags(tags: Vec<&Tag>) -> Vec<&Tag> {
     if tags.len() <= 1 {
         return tags;
     }
+
     // Sort tags by the is_root property in descending order
     let mut sorted_tags = tags.clone();
-    sorted_tags.sort_by(|tag_a, tag_b| tag_b.is_root.unwrap_or(0).cmp(&tag_a.is_root.unwrap_or(0)));
+
+    sorted_tags.sort_by(|tag_a: &&Tag, tag_b: &&Tag| {
+        tag_b.is_root.unwrap_or(0).cmp(&tag_a.is_root.unwrap_or(0))
+    });
+
     let mut i: usize = 0;
 
     while i < sorted_tags.len() {
@@ -152,7 +173,11 @@ async fn substitute_tags_for_backlinks<'a>(note: &'a mut Note, tags: Vec<&Tag>) 
 
 #[tokio::main]
 async fn main() {
-    let pool: DbPool = establish_connection().await;
+    let app: Bear2Reflect = Bear2Reflect::parse();
+
+    let database_path = app.bear_db.unwrap_or(PathBuf::from(BEAR_DB_PATH));
+
+    let pool: DbPool = establish_connection(database_path).await;
 
     let notes: Vec<Note> = fetch_active_notes(pool.clone()).await;
 
@@ -172,8 +197,8 @@ async fn main() {
         let grouped_tags_by_note = &grouped_tags_by_note;
 
         async move {
-            let tags = {
-                let z_pk = note.id;
+            let tags: Vec<&Tag> = {
+                let z_pk: i32 = note.id;
                 let empty_vec: Vec<&Tag> = Vec::new();
 
                 collapse_root_tags_with_nested_tags(
@@ -191,9 +216,8 @@ async fn main() {
         }
     });
 
-    let notes = join_all(note_futures).await;
 
-    println!("Preparing note for Reflect API...");
+    let notes = join_all(note_futures).await;
 
     for note in notes {
         let note_json = json!({
