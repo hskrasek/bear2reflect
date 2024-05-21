@@ -33,10 +33,15 @@ type DbPool = r2d2::Pool<ConnectionManager<SqliteConnection>>;
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Bear2Reflect {
+    #[arg(value_name = "bear_db_path")]
+    #[arg(default_value = BEAR_DB_PATH)]
     bear_db: Option<PathBuf>,
 
     #[command(flatten)]
     verbose: Verbosity,
+
+    #[arg(short, long, help = "Dry run the migration without writing to the Reflect API")]
+    dry_run: bool,
 }
 
 // TODO: Utilize the following paths to include note media in the migration, when supported.
@@ -51,7 +56,7 @@ struct Bear2Reflect {
 async fn establish_connection(
     database_path: PathBuf,
 ) -> Result<DbPool, Box<dyn std::error::Error>> {
-    let database_url: String = database_path.into_os_string().into_string().unwrap();
+    let database_url: String = shellexpand::tilde(&database_path.into_os_string().into_string().unwrap()).to_string();
     let database_url_ref: &str = &database_url;
     let manager: ConnectionManager<SqliteConnection> =
         ConnectionManager::<SqliteConnection>::new(database_url_ref);
@@ -244,8 +249,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filter_level(app.verbose.log_level_filter())
         .init();
 
-    let database_path = app.bear_db
-        .unwrap_or(PathBuf::from(shellexpand::tilde(BEAR_DB_PATH).as_ref()));
+    let database_path = app.bear_db.unwrap();
 
     let pool: DbPool = establish_connection(database_path).await?;
 
@@ -309,7 +313,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "content_markdown": note.text,
         });
 
-        writeln!(stdout, "{}", note_json)?;
+        debug!("{}", note_json);
     }
 
     Ok(())
