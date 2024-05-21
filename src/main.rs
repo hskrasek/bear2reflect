@@ -244,7 +244,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filter_level(app.verbose.log_level_filter())
         .init();
 
-    let database_path = app.bear_db.unwrap_or(PathBuf::from(BEAR_DB_PATH));
+    let database_path = app.bear_db
+        .unwrap_or(PathBuf::from(shellexpand::tilde(BEAR_DB_PATH).as_ref()));
 
     let pool: DbPool = establish_connection(database_path).await?;
 
