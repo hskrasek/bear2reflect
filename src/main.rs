@@ -6,6 +6,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::string::ToString;
 
+use anyhow::{Context, Result};
 use clap::Parser;
 use clap_verbosity_flag::Verbosity;
 use diesel::prelude::*;
@@ -47,7 +48,9 @@ struct Bear2Reflect {
 // imagepath = os.path.join(assetpath, "Note Images")
 // filepath = os.path.join(assetpath, "Note Files")
 
-async fn establish_connection(database_path: PathBuf) -> DbPool {
+async fn establish_connection(
+    database_path: PathBuf,
+) -> Result<DbPool, Box<dyn std::error::Error>> {
     let database_url: String = database_path.into_os_string().into_string().unwrap();
     let database_url_ref: &str = &database_url;
     let manager: ConnectionManager<SqliteConnection> =
@@ -58,17 +61,17 @@ async fn establish_connection(database_path: PathBuf) -> DbPool {
         database_url
     );
 
-    r2d2::Pool::builder()
+    Ok(r2d2::Pool::builder()
         .build(manager)
-        .unwrap_or_else(|_| panic!("Failed to establish database pool on {}.", database_url))
+        .with_context(|| format!("Failed to establish database pool on {}.", database_url))?)
 }
 
-async fn fetch_active_notes(pool: DbPool) -> Vec<Note> {
+async fn fetch_active_notes(pool: DbPool) -> Result<Vec<Note>, Box<dyn std::error::Error>> {
     let mut connection = pool
         .get()
-        .expect("Failed to fetch a connection from the database pool.");
+        .with_context(|| "Failed to fetch a connection from the database pool.")?;
 
-    task::spawn_blocking(move || {
+    Ok(task::spawn_blocking(move || {
         info!("Spawning task to fetch notes from the Bear database.");
 
         ZSFNOTE
@@ -76,23 +79,25 @@ async fn fetch_active_notes(pool: DbPool) -> Vec<Note> {
             .filter(ZARCHIVED.eq(0))
             .select(Note::as_select())
             .load(&mut connection)
-            .expect("Error loading notes from the Bear database.")
+            .expect("Failed to load notes from the Bear database.")
     })
-    .await
-    .expect("Task for fetching notes failed.")
+    .await?)
 }
 
-async fn fetch_tags_for_notes(pool: DbPool, notes: Vec<Note>) -> Vec<(Tag, Option<i32>)> {
+async fn fetch_tags_for_notes(
+    pool: DbPool,
+    notes: Vec<Note>,
+) -> Result<Vec<(Tag, Option<i32>)>, Box<dyn std::error::Error>> {
     let mut connection = pool
         .get()
-        .expect("Failed to fetch a connection from the database pool.");
+        .with_context(|| "Failed to fetch a connection from the database pool.")?;
 
     debug!(
         "Attempting to load tags for the following notes: {:#?}",
         &notes.clone().into_iter().map(|x| { x.id })
     );
 
-    task::spawn_blocking(move || {
+    Ok(task::spawn_blocking(move || {
         info!("Spawning task to fetch associated tags for notes.");
 
         NoteTag::belonging_to(&notes)
@@ -101,11 +106,12 @@ async fn fetch_tags_for_notes(pool: DbPool, notes: Vec<Note>) -> Vec<(Tag, Optio
             .load::<(Tag, Option<i32>)>(&mut connection)
             .expect("Failed to load tags for the selected notes from the Bear database.")
     })
-    .await
-    .expect("")
+    .await?)
 }
 
-async fn collapse_root_tags_with_nested_tags(tags: Vec<&Tag>) -> Vec<&Tag> {
+async fn collapse_root_tags_with_nested_tags(
+    tags: Vec<&Tag>,
+) -> Result<Vec<&Tag>, Box<dyn std::error::Error>> {
     info!("Collapsing tags vector to remove root tags, in instances where the root tag and tag nested under the root are present.");
 
     if tags.len() <= 1 {
@@ -114,7 +120,7 @@ async fn collapse_root_tags_with_nested_tags(tags: Vec<&Tag>) -> Vec<&Tag> {
             tags.len()
         );
 
-        return tags;
+        return Ok(tags);
     }
 
     // Sort tags by the is_root property in descending order
@@ -137,7 +143,10 @@ async fn collapse_root_tags_with_nested_tags(tags: Vec<&Tag>) -> Vec<&Tag> {
                         if other_title.starts_with(title) {
                             found = true;
 
-                            debug!("Found nested tag {} that starts with root tag {}", other_title, title);
+                            debug!(
+                                "Found nested tag {} that starts with root tag {}",
+                                other_title, title
+                            );
 
                             break;
                         }
@@ -157,10 +166,13 @@ async fn collapse_root_tags_with_nested_tags(tags: Vec<&Tag>) -> Vec<&Tag> {
         i += 1;
     }
 
-    sorted_tags
+    Ok(sorted_tags)
 }
 
-async fn replace_tags_in_text(text: Option<&mut String>, tags: Vec<&Tag>) -> Option<String> {
+async fn replace_tags_in_text(
+    text: Option<&mut String>,
+    tags: Vec<&Tag>,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
     if let Some(text) = text {
         let mut new_text = text.clone();
 
@@ -185,32 +197,45 @@ async fn replace_tags_in_text(text: Option<&mut String>, tags: Vec<&Tag>) -> Opt
             new_text = replaced_text.to_string();
         }
 
-        return Some(new_text);
+        return Ok(Some(new_text));
     }
 
-    None
+    Ok(None)
 }
 
-async fn substitute_tags_for_backlinks<'a>(note: &'a mut Note, tags: Vec<&Tag>) -> &'a mut Note {
-    info!("Substituting tags for Reflect formatted backlinks in note; Id: {}, Title: {}", note.id, note.title.clone().unwrap_or_default());
+async fn substitute_tags_for_backlinks<'a>(
+    note: &'a mut Note,
+    tags: Vec<&Tag>,
+) -> Result<&'a mut Note, Box<dyn std::error::Error>> {
+    info!(
+        "Substituting tags for Reflect formatted backlinks in note; Id: {}, Title: {}",
+        note.id,
+        note.title.clone().unwrap_or_default()
+    );
 
-    debug!("Note title before replacement: {:?}", note.title);
-    note.title = replace_tags_in_text(note.title.as_mut(), tags.clone()).await;
-    debug!("Note title after replacement: {:?}", note.title);
+    if let Some(mut title) = note.title.take() {
+        debug!("Note title before replacement: {:?}", note.title);
+        note.title = replace_tags_in_text(Some(&mut title), tags.clone()).await?;
+        debug!("Note title after replacement: {:?}", note.title);
+    }
 
-    debug!("Note subtitle before replacement: {:?}", note.subtitle);
-    note.subtitle = replace_tags_in_text(note.subtitle.as_mut(), tags.clone()).await;
-    debug!("Note subtitle after replacement: {:?}", note.subtitle);
+    if let Some(mut subtitle) = note.subtitle.take() {
+        debug!("Note subtitle before replacement: {:?}", note.subtitle);
+        note.subtitle = replace_tags_in_text(Some(&mut subtitle), tags.clone()).await?;
+        debug!("Note subtitle after replacement: {:?}", note.subtitle);
+    }
 
-    debug!("Note text before replacement: {:?}", note.text);
-    note.text = replace_tags_in_text(note.text.as_mut(), tags.clone()).await;
-    debug!("Note text after replacement: {:?}", note.text);
+    if let Some(mut text) = note.text.take() {
+        debug!("Note text before replacement: {:?}", note.text);
+        note.text = replace_tags_in_text(Some(&mut text), tags).await?;
+        debug!("Note text after replacement: {:?}", note.text);
+    }
 
-    note
+    Ok(note)
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut stdout = io::stdout().lock();
 
     let app: Bear2Reflect = Bear2Reflect::parse();
@@ -221,17 +246,15 @@ async fn main() {
 
     let database_path = app.bear_db.unwrap_or(PathBuf::from(BEAR_DB_PATH));
 
-    let pool: DbPool = establish_connection(database_path).await;
+    let pool: DbPool = establish_connection(database_path).await?;
 
-    writeln!(stdout, "Loading notes from Bear internal database...")
-        .expect("TODO: Update main func to use the ? operator");
+    writeln!(stdout, "Loading notes from Bear internal database...")?;
 
-    let notes: Vec<Note> = fetch_active_notes(pool.clone()).await;
+    let notes: Vec<Note> = fetch_active_notes(pool.clone()).await?;
 
-    writeln!(stdout, "Found {} notes to migrate to Reflect", notes.len())
-        .expect("TODO: Update main func to use the ? operator");
+    writeln!(stdout, "Found {} notes to migrate to Reflect", notes.len())?;
 
-    let tags: Vec<(Tag, Option<i32>)> = fetch_tags_for_notes(pool.clone(), notes.clone()).await;
+    let tags: Vec<(Tag, Option<i32>)> = fetch_tags_for_notes(pool.clone(), notes.clone()).await?;
 
     let mut grouped_tags_by_note: BTreeMap<i32, Vec<&Tag>> = BTreeMap::<i32, Vec<&Tag>>::new();
 
@@ -247,7 +270,7 @@ async fn main() {
         let grouped_tags_by_note = &grouped_tags_by_note;
 
         async move {
-            let tags: Vec<&Tag> = {
+            let tags = {
                 let z_pk: i32 = note.id;
                 let empty_vec: Vec<&Tag> = Vec::new();
 
@@ -260,16 +283,24 @@ async fn main() {
                 .await
             };
 
-            substitute_tags_for_backlinks(&mut note, tags).await;
+            substitute_tags_for_backlinks(&mut note, tags?).await?;
 
-            note
+            Ok::<Note, Box<dyn std::error::Error>>(note)
         }
     });
 
-    writeln!(stdout, "Preparing notes for Reflect...")
-        .expect("TODO: Update main func to use the ? operator");
+    writeln!(stdout, "Preparing notes for Reflect...")?;
 
-    let notes = join_all(note_futures).await;
+    let notes: Result<Vec<_>, _> = join_all(note_futures).await.into_iter().collect();
+
+    let notes = match notes {
+        Ok(notes) => notes,
+        Err(e) => {
+            writeln!(stdout, "Failed to prepare notes for Reflect: {}", e)?;
+
+            return Ok(());
+        }
+    };
 
     for note in notes {
         let note_json = json!({
@@ -277,7 +308,8 @@ async fn main() {
             "content_markdown": note.text,
         });
 
-        writeln!(stdout, "{}", note_json)
-            .expect("TODO: Update main func to use the ? operator");
+        writeln!(stdout, "{}", note_json)?;
     }
+
+    Ok(())
 }
