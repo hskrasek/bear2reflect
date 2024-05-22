@@ -15,14 +15,18 @@ use diesel::sqlite::SqliteConnection;
 use futures::future::join_all;
 use inflector::Inflector;
 use log::{debug, info};
+use r3bl_rs_utils_core::*;
+use r3bl_tuify::*;
 use regex::Regex;
 use serde_json::json;
 use tokio::task;
 
 use self::models::{Note, NoteTag, Tag};
+use self::reflect::Client;
 use self::schema::ZSFNOTE::dsl::*;
 
 mod models;
+mod reflect;
 mod schema;
 
 const BEAR_DB_PATH: &str =
@@ -37,10 +41,17 @@ struct Bear2Reflect {
     #[arg(default_value = BEAR_DB_PATH)]
     bear_db: Option<PathBuf>,
 
+    #[arg(short, long)]
+    limit: Option<i64>,
+
     #[command(flatten)]
     verbose: Verbosity,
 
-    #[arg(short, long, help = "Dry run the migration without writing to the Reflect API")]
+    #[arg(
+        short,
+        long,
+        help = "Dry run the migration without writing to the Reflect API"
+    )]
     dry_run: bool,
 }
 
@@ -56,7 +67,8 @@ struct Bear2Reflect {
 async fn establish_connection(
     database_path: PathBuf,
 ) -> Result<DbPool, Box<dyn std::error::Error>> {
-    let database_url: String = shellexpand::tilde(&database_path.into_os_string().into_string().unwrap()).to_string();
+    let database_url: String =
+        shellexpand::tilde(&database_path.into_os_string().into_string().unwrap()).to_string();
     let database_url_ref: &str = &database_url;
     let manager: ConnectionManager<SqliteConnection> =
         ConnectionManager::<SqliteConnection>::new(database_url_ref);
@@ -71,7 +83,10 @@ async fn establish_connection(
         .with_context(|| format!("Failed to establish database pool on {}.", database_url))?)
 }
 
-async fn fetch_active_notes(pool: DbPool) -> Result<Vec<Note>, Box<dyn std::error::Error>> {
+async fn fetch_active_notes(
+    pool: DbPool,
+    limit: Option<i64>,
+) -> Result<Vec<Note>, Box<dyn std::error::Error>> {
     let mut connection = pool
         .get()
         .with_context(|| "Failed to fetch a connection from the database pool.")?;
@@ -79,10 +94,17 @@ async fn fetch_active_notes(pool: DbPool) -> Result<Vec<Note>, Box<dyn std::erro
     Ok(task::spawn_blocking(move || {
         info!("Spawning task to fetch notes from the Bear database.");
 
-        ZSFNOTE
+        let mut notes = ZSFNOTE
             .filter(ZTRASHED.eq(0))
             .filter(ZARCHIVED.eq(0))
             .select(Note::as_select())
+            .into_boxed();
+
+        if let Some(limit) = limit {
+            notes = notes.limit(limit);
+        }
+
+        notes
             .load(&mut connection)
             .expect("Failed to load notes from the Bear database.")
     })
@@ -255,7 +277,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     writeln!(stdout, "Loading notes from Bear internal database...")?;
 
-    let notes: Vec<Note> = fetch_active_notes(pool.clone()).await?;
+    let notes: Vec<Note> = fetch_active_notes(pool.clone(), app.limit).await?;
 
     writeln!(stdout, "Found {} notes to migrate to Reflect", notes.len())?;
 
@@ -307,11 +329,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    let reflect = Client::new("***REMOVED***");
+
+    let reflect_graphs = reflect.get_graphs().await?;
+
+    let graph_names: Vec<String> = reflect_graphs
+        .iter()
+        .map(|graph| graph.name.clone())
+        .collect();
+
+    let graph_name = select_from_list(
+        "Select a graph to migrate notes to".to_string(),
+        graph_names,
+        get_size().map(|it| it.row_count).unwrap_or(ch!(80)).into(),
+        get_size().map(|it| it.col_count).unwrap_or(ch!(80)).into(),
+        SelectionMode::Single,
+        StyleSheet::default(),
+    );
+
+    let selected_graph = match &graph_name {
+        Some(graph_name) => reflect_graphs
+            .iter()
+            .find(|graph| graph.name.eq(graph_name.first().unwrap()))
+            .unwrap(),
+        None => {
+            writeln!(stdout, "No graph selected. Exiting...")?;
+
+            return Ok(());
+        }
+    };
+
     for note in notes {
         let note_json = json!({
             "subject": note.title,
             "content_markdown": note.text,
         });
+
+        if !app.dry_run {
+            reflect.create_note(&selected_graph.id, &note_json).await?;
+        } else {
+            writeln!(stdout, "Running in dry-run mode. Would have created the following note in the {} graph:\n{}", selected_graph.name, note_json)?;
+        }
 
         debug!("{}", note_json);
     }
