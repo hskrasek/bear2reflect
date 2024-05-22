@@ -4,6 +4,10 @@ on:
     branches: [main]
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write
+
 jobs:
   prerelease:
     runs-on: ubuntu-latest
@@ -27,6 +31,7 @@ jobs:
           preset: "conventionalcommits"
           github-token: ${{ github.token }}
           output-file: "false"
+          version-file: Cargo.toml
 
       - name: Create Release
         uses: actions/create-release@v1
