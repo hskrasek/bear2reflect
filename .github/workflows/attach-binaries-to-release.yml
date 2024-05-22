@@ -11,7 +11,7 @@ jobs:
       matrix:
         target: [x86_64-apple-macos, aarch64-apple-macos]
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Version
         id: vars
         shell: bash
