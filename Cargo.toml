@@ -22,3 +22,5 @@ serde_json = "1.0"
 tokio = { version = "1", features = ["full"] }
 anyhow = "1.0.86"
 shellexpand = "3.1.0"
+r3bl_tuify = "0.1.26"
+r3bl_rs_utils_core = "0.9.13"
