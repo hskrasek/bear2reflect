@@ -15,7 +15,7 @@ impl<'a> Client<'a> {
     pub fn new(access_token: &'a str) -> Self {
         let mut default_headers: HeaderMap = HeaderMap::new();
         default_headers.insert("Accept", "application/json".parse().unwrap());
-        default_headers.insert("User-Agent", format!("Bear2Reflect/{}", "0.1.0").parse().unwrap()); // TODO: Auto include the crate version, maybe OS details
+        default_headers.insert("User-Agent", format!("Bear2Reflect/{}", env!("CARGO_PKG_VERSION")).parse().unwrap());
 
         let client = reqwest::Client::builder()
             .default_headers(default_headers)
