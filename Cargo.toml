@@ -1,8 +1,6 @@
-version = "0.1.0"
-
 [package]
 name = "bear2reflect"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2021"
 
 [dependencies]
@@ -41,4 +39,19 @@ r3bl_rs_utils_core = "0.9.13"
 
   [dependencies.tokio]
   version = "1"
-  features = [ "full" ]
+  features = ["rt-multi-thread", "macros", "sync"]
+
+[profile.release]
+opt-level = "s"  # Optimize for size. Use "s" if you prefer speed over size.
+lto = true  # Enable Link Time Optimization
+codegen-units = 1  # Better optimization at the cost of longer compile time
+debug = 0  # Do not include debug symbols
+
+[profile.dev]
+opt-level = 0  # Keep it 0 for faster build times during development
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "target-cpu=native"]
+
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "target-cpu=native"]
