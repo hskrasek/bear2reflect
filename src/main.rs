@@ -12,6 +12,7 @@ use clap_verbosity_flag::Verbosity;
 use diesel::prelude::*;
 use diesel::r2d2::{self, ConnectionManager};
 use diesel::sqlite::SqliteConnection;
+use dotenv::dotenv;
 use futures::future::join_all;
 use inflector::Inflector;
 use log::{debug, info};
@@ -263,6 +264,8 @@ async fn substitute_tags_for_backlinks<'a>(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    dotenv().ok();
+
     let mut stdout = io::stdout().lock();
 
     let app: Bear2Reflect = Bear2Reflect::parse();
@@ -329,7 +332,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let reflect = Client::new("***REMOVED***");
+    let access_token = std::env::var("REFLECT_API_KEY").unwrap();
+    let reflect = Client::new(access_token.as_str());
 
     let reflect_graphs = reflect.get_graphs().await?;
 
