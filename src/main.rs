@@ -267,6 +267,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
 
     let mut stdout = io::stdout().lock();
+    let mut stderr = io::stderr().lock();
 
     let app: Bear2Reflect = Bear2Reflect::parse();
 
@@ -326,7 +327,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let notes = match notes {
         Ok(notes) => notes,
         Err(e) => {
-            writeln!(stdout, "Failed to prepare notes for Reflect: {}", e)?;
+            writeln!(stderr, "Failed to prepare notes for Reflect: {}", e)?;
 
             return Ok(());
         }
@@ -342,14 +343,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|graph| graph.name.clone())
         .collect();
 
-    let graph_name = select_from_list(
-        "Select a graph to migrate notes to".to_string(),
-        graph_names,
-        get_size().map(|it| it.row_count).unwrap_or(ch!(80)).into(),
-        get_size().map(|it| it.col_count).unwrap_or(ch!(80)).into(),
-        SelectionMode::Single,
-        StyleSheet::default(),
-    );
+    if graph_names.is_empty() {
+        writeln!(stderr, "No graphs found in Reflect. Exiting...")?;
+
+        return Ok(());
+    }
+
+    let graph_name = match graph_names {
+        x if x.len() == 1 => {
+            writeln!(stdout, "Only one graph found in Reflect. Auto selecting: {}", x.first().unwrap())?;
+
+            Some(x)
+        },
+        _ => select_from_list(
+            "Select a graph to migrate notes to".to_string(),
+            graph_names,
+            get_size().map(|it| it.row_count).unwrap_or(ch!(80)).into(),
+            get_size().map(|it| it.col_count).unwrap_or(ch!(80)).into(),
+            SelectionMode::Single,
+            StyleSheet::default(),
+        ),
+    };
 
     let selected_graph = match &graph_name {
         Some(graph_name) => reflect_graphs
@@ -357,7 +371,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .find(|graph| graph.name.eq(graph_name.first().unwrap()))
             .unwrap(),
         None => {
-            writeln!(stdout, "No graph selected. Exiting...")?;
+            writeln!(stderr, "No graph selected. Exiting...")?;
 
             return Ok(());
         }
