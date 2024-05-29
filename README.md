@@ -30,6 +30,7 @@ If you have any feature requests, please open an issue and I'll see what I can d
 > [!NOTE]
 > Some of these planned features may not be possible due to limitations in the Reflect API
 
+- [ ] Optionally creating backlinks for the newly created notes and append to the daily note with the backlinks
 - [ ] Converting nested tags into backlinks and tags (e.g. `#tag/subtag` becomes `[[tag]] #subtag`, or maybe even `#tag [[subtag]]`) 
 - [ ] Attaching files and other media in Bear notes to Reflect notes
   - This may not be possible due to limitations in the Reflect API
