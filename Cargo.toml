@@ -1,6 +1,6 @@
 [package]
 name = "bear2reflect"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [dependencies]
@@ -50,6 +50,9 @@ debug = 0  # Do not include debug symbols
 
 [profile.dev]
 opt-level = 0  # Keep it 0 for faster build times during development
+
+[build]
+target = ["x86_64-apple-darwin", "aarch64-apple-darwin"]
 
 [target.x86_64-apple-darwin]
 rustflags = ["-C", "target-cpu=native"]
