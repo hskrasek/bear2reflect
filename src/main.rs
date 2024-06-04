@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::string::ToString;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -266,7 +267,7 @@ async fn substitute_tags_for_backlinks<'a>(
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
 
-    let mut stdout = io::stdout().lock();
+    let stdout = Arc::new(Mutex::new(io::stdout().lock()));
     let mut stderr = io::stderr().lock();
 
     let app: Bear2Reflect = Bear2Reflect::parse();
@@ -279,11 +280,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let pool: DbPool = establish_connection(database_path).await?;
 
-    writeln!(stdout, "Loading notes from Bear internal database...")?;
+    writeln!(
+        stdout.lock().unwrap(),
+        "Loading notes from Bear internal database..."
+    )?;
 
     let notes: Vec<Note> = fetch_active_notes(pool.clone(), app.limit).await?;
 
-    writeln!(stdout, "Found {} notes to migrate to Reflect", notes.len())?;
+    writeln!(
+        stdout.lock().unwrap(),
+        "Found {} notes to migrate to Reflect",
+        notes.len()
+    )?;
 
     let tags: Vec<(Tag, Option<i32>)> = fetch_tags_for_notes(pool.clone(), notes.clone()).await?;
 
@@ -320,7 +328,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    writeln!(stdout, "Preparing notes for Reflect...")?;
+    writeln!(stdout.lock().unwrap(), "Preparing notes for Reflect...")?;
 
     let notes: Result<Vec<_>, _> = join_all(note_futures).await.into_iter().collect();
 
@@ -334,7 +342,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let access_token = std::env::var("REFLECT_API_KEY").unwrap();
-    let reflect = Client::new(access_token.as_str());
+    let reflect = Arc::new(Client::new(access_token.as_str()));
 
     let reflect_graphs = reflect.get_graphs().await?;
 
@@ -351,10 +359,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let graph_name = match graph_names {
         x if x.len() == 1 => {
-            writeln!(stdout, "Only one graph found in Reflect. Auto selecting: {}", x.first().unwrap())?;
+            writeln!(
+                stdout.lock().unwrap(),
+                "Only one graph found in Reflect. Auto selecting: {}",
+                x.first().unwrap()
+            )?;
 
             Some(x)
-        },
+        }
         _ => select_from_list(
             "Select a graph to migrate notes to".to_string(),
             graph_names,
@@ -377,19 +389,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    for note in notes {
-        let note_json = json!({
-            "subject": note.title,
-            "content_markdown": note.text,
+    if !app.dry_run {
+        let create_futures: Vec<_> = notes
+            .iter()
+            .map(|note| {
+                let note_json = json!({
+                    "subject": note.title,
+                    "content_markdown": note.text,
+                });
+
+                let reflect = Arc::clone(&reflect);
+
+                async move { reflect.create_note(&selected_graph.id, &note_json).await }
+            })
+            .collect();
+
+        // Await all the futures and handle errors
+        let results = join_all(create_futures).await;
+
+        for result in results {
+            if let Err(e) = result {
+                writeln!(stdout.lock().unwrap(), "Failed to create note: {}", e)?;
+            }
+        }
+    } else {
+        let dry_run_futures = notes.iter().map(|note| {
+            let note_json = json!({
+                "subject": note.title,
+                "content_markdown": note.text,
+            });
+
+            let stdout = Arc::clone(&stdout);
+
+            async move {
+                writeln!(stdout.lock().unwrap(), "Running in dry-run mode. Would have created the following note in the {} graph:\n{}", selected_graph.name, note_json)?;
+                debug!("{}", note_json);
+                Ok::<(), std::io::Error>(())
+            }
         });
 
-        if !app.dry_run {
-            reflect.create_note(&selected_graph.id, &note_json).await?;
-        } else {
-            writeln!(stdout, "Running in dry-run mode. Would have created the following note in the {} graph:\n{}", selected_graph.name, note_json)?;
-        }
-
-        debug!("{}", note_json);
+        join_all(dry_run_futures)
+            .await
+            .into_iter()
+            .collect::<Result<_, _>>()?;
     }
 
     Ok(())
