@@ -15,7 +15,12 @@ impl<'a> Client<'a> {
     pub fn new(access_token: &'a str) -> Self {
         let mut default_headers: HeaderMap = HeaderMap::new();
         default_headers.insert("Accept", "application/json".parse().unwrap());
-        default_headers.insert("User-Agent", format!("Bear2Reflect/{}", env!("CARGO_PKG_VERSION")).parse().unwrap());
+        default_headers.insert(
+            "User-Agent",
+            format!("Bear2Reflect/{}", env!("CARGO_PKG_VERSION"))
+                .parse()
+                .unwrap(),
+        );
 
         let client = reqwest::Client::builder()
             .default_headers(default_headers)
@@ -25,13 +30,11 @@ impl<'a> Client<'a> {
         Self {
             access_token,
             base_url: "https://reflect.app/api",
-            client
+            client,
         }
     }
 
-    pub async fn get_graphs(
-        &self
-    ) -> Result<Vec<Graph>, Box<dyn std::error::Error>> {
+    pub async fn get_graphs(&self) -> Result<Vec<Graph>, Box<dyn std::error::Error>> {
         let graphs: Vec<Graph> = self
             .client
             .get(&format!("{}/graphs", self.base_url))
@@ -41,7 +44,7 @@ impl<'a> Client<'a> {
             .map_err(|e| anyhow!("Failed to fetch graphs: {}", e))?
             .json::<Vec<Graph>>()
             .await
-            .map_err(|e| { anyhow!("Failed to decode response: {}", e)})?;
+            .map_err(|e| anyhow!("Failed to decode response: {}", e))?;
 
         Ok(graphs)
     }
@@ -76,7 +79,11 @@ pub struct SuccessfulResponse {
 
 impl Display for SuccessfulResponse {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", json!({"id": self.id, "created_at": self.created_at, "updated_at": self.updated_at}))
+        write!(
+            f,
+            "{}",
+            json!({"id": self.id, "created_at": self.created_at, "updated_at": self.updated_at})
+        )
     }
 }
 
