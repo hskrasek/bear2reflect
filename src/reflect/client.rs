@@ -1,6 +1,6 @@
 use std::fmt::{Debug, Display, Formatter};
 
-use anyhow::{anyhow, Context};
+use anyhow::anyhow;
 use reqwest::header::HeaderMap;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -67,25 +67,16 @@ impl<'a> Client<'a> {
     }
 }
 
-pub trait Response: Debug + Display {
-    fn status(&self) -> u16;
-}
-
 #[derive(Deserialize, Debug)]
 pub struct SuccessfulResponse {
-    status: u16,
-    success: bool,
+    id: String,
+    created_at: String,
+    updated_at: String,
 }
 
 impl Display for SuccessfulResponse {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", json!({"success": self.success}))
-    }
-}
-
-impl Response for SuccessfulResponse {
-    fn status(&self) -> u16 {
-        self.status
+        write!(f, "{}", json!({"id": self.id, "created_at": self.created_at, "updated_at": self.updated_at}))
     }
 }
 
